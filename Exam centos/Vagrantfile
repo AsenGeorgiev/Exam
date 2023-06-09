@@ -1,0 +1,100 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  config.ssh.insert_key = false
+
+  config.vm.box = "shekeriev/centos-stream-8"
+
+  config.vm.provider "virtualbox" do |v|
+    v.gui = false
+    v.memory = 4048
+    v.cpus = 2
+  end
+
+  # Docker Machine - Centos 8
+  config.vm.define "docker" do |docker|
+    docker.vm.hostname = "docker"
+    docker.vm.network "private_network", ip: "192.168.99.100"
+    docker.vm.provision "shell", path: "add_hosts.sh"
+    docker.vm.provision "shell", inline: <<EOS
+
+echo "* Add any prerequisites ..."
+dnf install -y epel-release
+dnf install -y nano python3 python3-pip
+pip3 install docker
+
+echo "* Creating a docker network ..."
+sudo docker network create net
+
+echo "* Stopping Firewall ..."
+#sudo systemctl stop firewalld
+sudo systemctl disable --now firewalld
+
+echo "* install terraform ..."
+wget https://releases.hashicorp.com/terraform/1.4.6/terraform_1.4.6_linux_amd64.zip
+unzip terraform_1.4.6_linux_amd64.zip
+mv terraform /usr/local/bin
+EOS
+
+      docker.vm.provision "ansible_local" do |ansible|
+        #sudo usermod -aG docker vagrant
+        #may need restart
+        ansible.become = true
+        ansible.install_mode = :default
+        ansible.playbook = "playbooks/docker.yml"
+        ansible.galaxy_role_file = "playbooks/req.yml"
+        ansible.galaxy_roles_path = "/etc/ansible/roles"
+        ansible.galaxy_command = "sudo ansible-galaxy install --role-file=%{role_file} --roles-path=%{roles_path} --force"
+        end
+      end
+
+
+
+    $puppetinstall = <<PUPPETRPM
+    sudo dnf install -y https://yum.puppet.com/puppet7-release-el-8.noarch.rpm
+    sudo dnf install -y puppet
+PUPPETRPM
+
+    $webmods  = <<MODULESWEB
+    puppet module install puppetlabs-vcsrepo
+    puppet module install puppetlabs-firewall
+    puppet module install puppet-selinux 
+    sudo cp -vR ~/.puppetlabs/etc/code/modules/ /etc/puppetlabs/code/
+MODULESWEB
+
+    config.vm.define "web" do |web|
+      web.vm.hostname = "web"
+      web.vm.network "private_network", ip: "192.168.99.101"
+      web.vm.provision "shell", inline: $puppetinstall, privileged: false
+      web.vm.provision "shell", inline: $webmods, privileged: false
+      web.vm.provision "shell", path: "add_hosts.sh"
+
+      web.vm.provision "puppet" do |puppet|
+        puppet.manifests_path = "manifests"
+        puppet.manifest_file = "web.pp"
+        puppet.options = "--verbose --debug"
+      end
+    end
+
+    $dbmods = <<MODULEDB
+    puppet module install puppetlabs-vcsrepo
+    puppet module install puppetlabs/mysql
+    puppet module install puppetlabs-firewall
+    sudo cp -vR ~/.puppetlabs/etc/code/modules/ /etc/puppetlabs/code/
+MODULEDB
+
+    config.vm.define "db" do |db|
+      db.vm.hostname = "db"
+      db.vm.network "private_network", ip: "192.168.99.102"
+      db.vm.provision "shell", inline: $puppetinstall, privileged: false
+      db.vm.provision "shell", inline: $dbmods, privileged: false
+      db.vm.provision "shell", path: "add_hosts.sh"
+
+      db.vm.provision "puppet" do |puppet|
+        puppet.manifests_path = "manifests"
+        puppet.manifest_file = "db.pp"
+        puppet.options = "--verbose --debug"
+      end
+    end
+  end
